@@ -5,10 +5,12 @@ import guru.springframework.converters.IngredientCommandToIngredient;
 import guru.springframework.converters.IngredientToIngredientCommand;
 import guru.springframework.domain.Ingredient;
 import guru.springframework.domain.Recipe;
-import guru.springframework.repositories.RecipeRepository;
+import guru.springframework.exceptions.NotFoundException;
 import guru.springframework.repositories.UnitOfMeasureRepository;
+import guru.springframework.repositories.reactive.RecipeReactiveRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Mono;
 
 import java.util.Optional;
 
@@ -21,29 +23,32 @@ public class IngredientServiceImpl implements IngredientService {
 
     private final IngredientToIngredientCommand ingredientToIngredientCommand;
     private final IngredientCommandToIngredient ingredientCommandToIngredient;
-    private final RecipeRepository recipeRepository;
+    private final RecipeReactiveRepository recipeReactiveRepository;
     private final UnitOfMeasureRepository unitOfMeasureRepository;
+
+
 
     public IngredientServiceImpl(IngredientToIngredientCommand ingredientToIngredientCommand,
                                  IngredientCommandToIngredient ingredientCommandToIngredient,
-                                 RecipeRepository recipeRepository, UnitOfMeasureRepository unitOfMeasureRepository) {
+                                 RecipeReactiveRepository recipeReactiveRepository, UnitOfMeasureRepository unitOfMeasureRepository) {
         this.ingredientToIngredientCommand = ingredientToIngredientCommand;
         this.ingredientCommandToIngredient = ingredientCommandToIngredient;
-        this.recipeRepository = recipeRepository;
+        this.recipeReactiveRepository = recipeReactiveRepository;
         this.unitOfMeasureRepository = unitOfMeasureRepository;
     }
 
     @Override
-    public IngredientCommand findByRecipeIdAndIngredientId(String recipeId, String ingredientId) {
+    public Mono<IngredientCommand> findByRecipeIdAndIngredientId(String recipeId, String ingredientId) {
 
-        Optional<Recipe> recipeOptional = recipeRepository.findById(recipeId);
+        //Optional<Recipe> recipeOptional
+        Mono<Recipe> monoRecipe = recipeReactiveRepository.findById(recipeId);
 
-        if (!recipeOptional.isPresent()){
+        if (monoRecipe == null){
             //todo impl error handling
             log.error("recipe id not found. Id: " + recipeId);
         }
 
-        Recipe recipe = recipeOptional.get();
+        Recipe recipe = monoRecipe.block(); //recipeOptional.get();
 
         Optional<IngredientCommand> ingredientCommandOptional = recipe.getIngredients().stream()
                 .filter(ingredient -> ingredient.getId().equals(ingredientId))
@@ -58,18 +63,20 @@ public class IngredientServiceImpl implements IngredientService {
         IngredientCommand ingredientCommand = ingredientCommandOptional.get();
         ingredientCommand.setRecipeId(recipe.getId());
 
-        return ingredientCommandOptional.get();
+        return Mono.just(ingredientCommandOptional.get());
     }
 
+
     @Override
-    public IngredientCommand saveIngredientCommand(IngredientCommand command) {
-        Optional<Recipe> recipeOptional = recipeRepository.findById(command.getRecipeId());
+    public Mono<IngredientCommand> saveIngredientCommand(IngredientCommand command) {
+        Optional<Recipe> recipeOptional = recipeReactiveRepository.findById(command.getRecipeId()).blockOptional();
 
         if(!recipeOptional.isPresent()){
 
             //todo toss error if not found!
             log.error("Recipe not found for id: " + command.getRecipeId());
-            return new IngredientCommand();
+            throw new NotFoundException("Recipe not found for id: " + command.getRecipeId());
+            //return Mono.just(new IngredientCommand());
         } else {
             Recipe recipe = recipeOptional.get();
 
@@ -93,7 +100,7 @@ public class IngredientServiceImpl implements IngredientService {
                 recipe.addIngredient(ingredient);
             }
 
-            Recipe savedRecipe = recipeRepository.save(recipe);
+            Recipe savedRecipe = recipeReactiveRepository.save(recipe).block();
 
             Optional<Ingredient> savedIngredientOptional = savedRecipe.getIngredients().stream()
                     .filter(recipeIngredients -> recipeIngredients.getId().equals(command.getId()))
@@ -115,17 +122,17 @@ public class IngredientServiceImpl implements IngredientService {
             IngredientCommand ingredientCommandSaved = ingredientToIngredientCommand.convert(savedIngredientOptional.get());
             ingredientCommandSaved.setRecipeId(recipe.getId());
 
-            return ingredientCommandSaved;
+            return Mono.just(ingredientCommandSaved);
         }
 
     }
 
     @Override
-    public void deleteById(String recipeId, String idToDelete) {
+    public Mono<Void> deleteById(String recipeId, String idToDelete) {
 
         log.debug("Deleting ingredient: " + recipeId + ":" + idToDelete);
 
-        Optional<Recipe> recipeOptional = recipeRepository.findById(recipeId);
+        Optional<Recipe> recipeOptional = recipeReactiveRepository.findById(recipeId).blockOptional();
 
         if(recipeOptional.isPresent()){
             Recipe recipe = recipeOptional.get();
@@ -142,10 +149,122 @@ public class IngredientServiceImpl implements IngredientService {
                 Ingredient ingredientToDelete = ingredientOptional.get();
                // ingredientToDelete.setRecipe(null);
                 recipe.getIngredients().remove(ingredientOptional.get());
-                recipeRepository.save(recipe);
+                recipeReactiveRepository.save(recipe);
             }
         } else {
             log.debug("Recipe Id Not found. Id:" + recipeId);
         }
+
+        return Mono.empty();
     }
 }
+
+ /*
+    @Slf4j
+public class ReactiveExamplesTest {
+
+    Person michael = new Person("Michael", "Weston");
+    Person fiona = new Person("Fiona", "Glenanne");
+    Person sam = new Person("Sam", "Axe");
+    Person jesse = new Person("Jesse", "Porter");
+
+    @Test
+    public void monoTests() throws Exception {
+        //create new person mono
+        Mono<Person> personMono = Mono.just(michael);
+
+        //get person object from mono publisher
+        Person person = personMono.block();
+
+        // output name
+        log.info(person.sayMyName());
+    }
+
+    @Test
+    public void monoTransform() throws Exception {
+        //create new person mono
+        Mono<Person> personMono = Mono.just(fiona);
+
+        PersonCommand command = personMono
+                .map(person -> { //type transformation
+                    return new PersonCommand(person);
+                }).block();
+
+        log.info(command.sayMyName());
+    }
+
+    @Test(expected = NullPointerException.class)
+    public void monoFilter() throws Exception {
+        Mono<Person> personMono = Mono.just(sam);
+
+        //filter example
+        Person samAxe = personMono
+                .filter(person -> person.getFirstName().equalsIgnoreCase("foo"))
+                .block();
+
+
+        log.info(samAxe.sayMyName()); //throws NPE
+    }
+
+    @Test
+    public void fluxTest() throws Exception {
+
+        Flux<Person> people = Flux.just(michael, fiona, sam, jesse);
+
+        people.subscribe(person -> log.info(person.sayMyName()));
+
+    }
+
+    @Test
+    public void fluxTestFilter() throws Exception {
+
+        Flux<Person> people = Flux.just(michael, fiona, sam, jesse);
+
+        people.filter(person -> person.getFirstName().equals(fiona.getFirstName()))
+                .subscribe(person -> log.info(person.sayMyName()));
+
+    }
+
+    @Test
+    public void fluxTestDelayNoOutput() throws Exception {
+
+        Flux<Person> people = Flux.just(michael, fiona, sam, jesse);
+
+        people.delayElements(Duration.ofSeconds(1))
+                .subscribe(person -> log.info(person.sayMyName()));
+
+    }
+
+    @Test
+    public void fluxTestDelay() throws Exception {
+
+        CountDownLatch countDownLatch = new CountDownLatch(1);
+
+        Flux<Person> people = Flux.just(michael, fiona, sam, jesse);
+
+        people.delayElements(Duration.ofSeconds(1))
+                .doOnComplete(countDownLatch::countDown)
+                .subscribe(person -> log.info(person.sayMyName()));
+
+        countDownLatch.await();
+
+    }
+
+    @Test
+    public void fluxTestFilterDelay() throws Exception {
+
+        CountDownLatch countDownLatch = new CountDownLatch(1);
+
+        Flux<Person> people = Flux.just(michael, fiona, sam, jesse);
+
+        people.delayElements(Duration.ofSeconds(1))
+                .filter(person -> person.getFirstName().contains("i"))
+                .doOnComplete(countDownLatch::countDown)
+                .subscribe(person -> log.info(person.sayMyName()));
+
+        countDownLatch.await();
+    }
+
+}
+
+     */
